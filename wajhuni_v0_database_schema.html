@@ -1,0 +1,153 @@
+
+<div id="erd" style="padding: 1rem 0;"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '13px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+  },
+});
+const { svg } = await mermaid.render('erd-svg', `erDiagram
+
+  UNIVERSITIES {
+    uuid id PK
+    string name_ar
+    string name_fr
+    string acronym
+    string type
+    string governorate
+    string neighborhood
+    string address
+    float latitude
+    float longitude
+    string nearest_transport
+    string website_url
+    string description
+    boolean is_active
+    timestamp created_at
+  }
+
+  EMAIL_DOMAINS {
+    uuid id PK
+    uuid university_id FK
+    string domain
+    boolean is_active
+  }
+
+  USERS {
+    uuid id PK
+    string full_name
+    string email
+    string password_hash
+    string role
+    string verification_status
+    uuid university_id FK
+    string profile_picture_url
+    timestamp created_at
+    timestamp last_login
+  }
+
+  RATING_CATEGORIES {
+    uuid id PK
+    string name
+    string slug
+    string description
+    int display_order
+    boolean is_active
+  }
+
+  RATING_SUBMISSIONS {
+    uuid id PK
+    uuid user_id FK
+    uuid university_id FK
+    string moderation_status
+    boolean is_anonymous
+    timestamp created_at
+    timestamp updated_at
+  }
+
+  RATING_SCORES {
+    uuid id PK
+    uuid submission_id FK
+    uuid category_id FK
+    int score
+  }
+
+  RATING_SUB_SCORES {
+    uuid id PK
+    uuid submission_id FK
+    uuid category_id FK
+    string sub_key
+    int score
+  }
+
+  COMMENTS {
+    uuid id PK
+    uuid submission_id FK
+    uuid category_id FK
+    string body
+    boolean is_featured
+    boolean is_anonymous
+    string moderation_status
+    timestamp created_at
+  }
+
+  UNIVERSITY_PHOTOS {
+    uuid id PK
+    uuid university_id FK
+    uuid uploaded_by FK
+    string url
+    string caption
+    string category
+    boolean is_approved
+    int display_order
+    timestamp created_at
+  }
+
+  UNIVERSITIES ||--o{ EMAIL_DOMAINS : validates_via
+  UNIVERSITIES ||--o{ USERS : enrolled_at
+  UNIVERSITIES ||--o{ RATING_SUBMISSIONS : receives
+  UNIVERSITIES ||--o{ UNIVERSITY_PHOTOS : has
+  USERS ||--o{ RATING_SUBMISSIONS : submits
+  USERS ||--o{ UNIVERSITY_PHOTOS : uploads
+  RATING_SUBMISSIONS ||--o{ RATING_SCORES : contains
+  RATING_SUBMISSIONS ||--o{ RATING_SUB_SCORES : contains
+  RATING_SUBMISSIONS ||--o{ COMMENTS : has
+  RATING_CATEGORIES ||--o{ RATING_SCORES : categorizes
+  RATING_CATEGORIES ||--o{ RATING_SUB_SCORES : categorizes
+  RATING_CATEGORIES ||--o{ COMMENTS : categorizes
+`);
+document.getElementById('erd').innerHTML = svg;
+
+document.querySelectorAll('#erd svg .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+document.querySelectorAll('#erd svg .row-rect-odd path, #erd svg .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>

@@ -1,0 +1,55 @@
+# ADR-002: Non-enumerating registration and two-stage account trust
+
+**Date:** 2026-10-31
+**Status:** Accepted
+
+## Context
+WajhUni's value depends on every review coming from a real student at the
+university being reviewed. Registration is the entry point to that trust
+chain, and it is a public, unauthenticated endpoint. Two risks follow:
+
+1. A registration endpoint that answers differently for "email already
+   registered" lets an attacker test lists of student emails and learn
+   exactly who has an account (user enumeration).
+2. Proving that someone controls a university email is a separate fact
+   from creating an account. Treating "account exists" as "student is
+   verified" would let unverified accounts submit ratings.
+
+## Decision
+
+### 1. Identical response for new and existing emails
+`POST /auth/register` returns the same status code and message
+("If this email is eligible, a verification link has been sent.")
+whether the email is new or already registered.
+
+### 2. Assign university at registration, grant trust at verification
+`university_id` is derived from the email domain at registration, but
+`verification_status` stays `pending`. Only a successful email
+verification moves it to `verified`. Rating submission requires
+`verified`.
+
+## Alternatives considered
+- **409 Conflict for existing emails.** Better developer and user
+  experience, but it leaks account existence. Rejected.
+- **Assign university only after verification.** Simpler to reason about,
+  but we would have to store the claimed domain somewhere else in the
+  meantime. Deriving it from the email at registration costs nothing, and
+  the status field alone gates privileges.
+- **Treat registration as verification.** Rejected: anyone could type an
+  address they do not own.
+
+## Consequences
++ Account existence is not exposed through the registration response.
++ A single field (`verification_status`) is the one source of truth for
+  "may this user review", checked in one place.
++ The university link is already in place when verification completes.
+- Users who forget they registered get no explicit "you already have an
+  account" message. A resend-verification flow and a login-side hint
+  must cover this.
+- Residual leak: a timing side channel. The new-email path hashes a
+  password (slow) while the existing-email path returns immediately.
+  An attacker measuring response times could still distinguish them.
+  Accepted for v0; mitigation (hash a dummy password on the existing-email
+  path, or move the work to a background task) is tracked for v1.
+- The unsupported-domain error (400) reveals which universities are on the
+  platform. Accepted: this is public information and helps real students.
