@@ -1,14 +1,16 @@
 # ADR-001: Use Redis for refresh token storage
 
 ## Context
-JWTs are stateless. We need instant token revocation 
-for logout and account suspension.
+JWTs are stateless, so access-token revocation is not immediate unless every
+request checks a denylist. The system needs revocable refresh tokens for logout
+and to prevent suspended accounts from obtaining new access tokens.
 
 ## Decision
 Store refresh tokens in Redis with TTL, not in PostgreSQL.
 
 ## Consequences
-+ Revocation is O(1) — just delete the Redis key
-+ No DB query on every token refresh
++ Refresh-token revocation is O(1) — just delete the Redis key
++ Suspended accounts cannot get new tokens when they next try to refresh
++ Access tokens already issued remain valid until expiry (15 minutes by default)
 - Adds Redis as a required infrastructure dependency
 - If Redis goes down, all users are logged out

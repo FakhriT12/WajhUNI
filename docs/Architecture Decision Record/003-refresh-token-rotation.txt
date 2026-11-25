@@ -1,0 +1,47 @@
+# ADR-003: Rotating refresh tokens and bounded access-token validity
+
+**Date:** 2026-11-25
+**Status:** Accepted
+
+## Context
+
+The API issues short-lived, stateless JWT access tokens and longer-lived
+refresh tokens stored in Redis. Refresh tokens must be single-use to limit
+the value of a stolen token, and logout must revoke a session without revealing
+whether a supplied token was valid.
+
+## Decision
+
+1. Store only a SHA-256 hash of each opaque refresh token in Redis. The value is
+   the owning user ID, and the key expires according to
+   `REFRESH_TOKEN_EXPIRE_DAYS`.
+2. `POST /auth/refresh` atomically reads and deletes the submitted token with
+   Redis `GETDEL`. It confirms that the user still exists and is verified,
+   then returns a new access token and a replacement refresh token. The old
+   refresh token cannot be used again.
+3. `POST /auth/logout` deletes the submitted refresh-token key and always
+   returns 204, including when the key was already missing.
+4. Access tokens remain stateless JWTs with a 15-minute default lifetime.
+   Logout revokes the refresh token, but an already-issued access token remains
+   usable until it expires. A suspended user cannot refresh, but an access
+   token already issued to that user may remain valid for up to 15 minutes.
+
+## Consequences
+
++ A refresh token is consumed at most once, including when refresh requests
+  arrive concurrently.
++ Logout is idempotent and does not reveal whether a token existed.
++ A user suspension prevents subsequent token refreshes.
+- Logout does not immediately invalidate an access token already issued.
+- Suspending a user does not proactively delete their outstanding refresh
+  tokens; those tokens are rejected and consumed when used.
+
+## Alternatives and future work
+
+For immediate access-token revocation, add a Redis denylist keyed by a JWT
+`jti` claim and check it on every protected request. This adds a Redis lookup
+to each such request and is deferred to v1.
+
+To delete all active refresh tokens when a user is suspended, maintain a
+per-user Redis set of refresh-token hashes and revoke every member on
+suspension. This is also deferred to v1.

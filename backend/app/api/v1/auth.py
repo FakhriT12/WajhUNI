@@ -1,21 +1,37 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from redis.asyncio import Redis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import generate_opaque_token, hash_password
+from app.core.redis import get_redis
+from app.core.security import (
+    create_access_token,
+    generate_opaque_token,
+    hash_password,
+    verify_password,
+)
 from app.models.models import EmailDomain, EmailVerificationToken, User
 from app.schemas.auth import (
+    LoginRequest,
     MessageResponse,
+    RefreshRequest,
     RegisterRequest,
     RegisterResponse,
+    TokenResponse,
+    UserPublic,
     VerifyEmailRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_DUMMY_HASH = hash_password("not-a-real-password")
 
 
 @router.post(
@@ -66,11 +82,118 @@ async def register(
         )
     )
 
-    print(f"[DEV] verification token for {email}: {raw_token}")
+    # TODO(phase-1): replace with email sending via BackgroundTasks; remove this print
+    if settings.ENVIRONMENT == "development":
+        print(f"[DEV] verification token for {email}: {raw_token}")
 
     return RegisterResponse(
         message="If this email is eligible, a verification link has been sent."
     )
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(
+    payload: LoginRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> TokenResponse:
+    email = str(payload.email).lower()
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    password_ok = verify_password(
+        payload.password,
+        user.password_hash if user else _DUMMY_HASH,
+    )
+    if user is None or not password_ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    if user.verification_status == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please verify your email before logging in.",
+        )
+    if user.verification_status != "verified":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not available.",
+        )
+
+    user.last_login = datetime.now(timezone.utc)
+
+    access_token = create_access_token(str(user.id), user.role)
+    raw_refresh, refresh_hash = generate_opaque_token()
+    await redis.set(
+        f"refresh:{refresh_hash}",
+        str(user.id),
+        ex=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+    )
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=raw_refresh,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(
+    payload: RefreshRequest,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> TokenResponse:
+    old_hash = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+    user_id = await redis.getdel(f"refresh:{old_hash}")
+
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token.",
+    )
+    if user_id is None:
+        raise unauthorized
+
+    try:
+        parsed_user_id = UUID(user_id)
+    except ValueError:
+        raise unauthorized from None
+
+    result = await db.execute(select(User).where(User.id == parsed_user_id))
+    user = result.scalar_one_or_none()
+    if user is None or user.verification_status != "verified":
+        raise unauthorized
+
+    access_token = create_access_token(str(user.id), user.role)
+    raw_refresh, new_hash = generate_opaque_token()
+    await redis.set(
+        f"refresh:{new_hash}",
+        str(user.id),
+        ex=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+    )
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=raw_refresh,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    payload: RefreshRequest,
+    redis: Redis = Depends(get_redis),
+) -> None:
+    token_hash = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+    await redis.delete(f"refresh:{token_hash}")
+
+
+@router.get("/me", response_model=UserPublic)
+async def get_me(
+    current_user: User = Depends(get_current_user),
+) -> UserPublic:
+    return UserPublic.model_validate(current_user)
 
 
 @router.post("/verify-email", response_model=MessageResponse)
